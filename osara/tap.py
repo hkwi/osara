@@ -3,7 +3,7 @@ import threading
 import confluent_kafka
 from json import loads as json_loads
 from json import dumps as json_dumps
-from queue import Queue
+from queue import Queue, Empty
 from pydantic import BaseModel
 from dataclasses import dataclass
 from collections import defaultdict, ChainMap
@@ -32,6 +32,14 @@ class Message:
 	def json(self):
 		return json_loads(self.value)
 
+@dataclass
+class TopicPartition:
+	topic: str
+	partition: int
+	offset: int
+	
+	class Config:
+		orm_mode = True
 
 class Config(dict):
 	def __init__(self, both={}, producer={}, consumer={}):
@@ -51,6 +59,7 @@ def run_in_thread(poll_func, daemon=True):
 	th.start()
 	return stop_flag
 
+
 #
 # Plans to make kafka runtime pluggable
 # - async
@@ -65,11 +74,13 @@ class Tap(object):
 	_started = False
 	_consumer = None
 	_consumer_mutex = None
+	_producer = None
 	
 	def __init__(self, config={}):
 		self.config = Config(config)
 		self._schema = {}
 		self._handlers = defaultdict(lambda:[])
+		self._assigned = []
 		self._error_handlers = []
 	
 	def schema(self, topic_name):
@@ -97,17 +108,37 @@ class Tap(object):
 		self._started = True
 		return run_in_thread(self.poll, daemon=daemon)
 	
-	def poll(self):
-		if self._consumer is None:
-			topics = list(self._handlers.keys())
-			
-			consumer = confluent_kafka.Consumer(dict(self.config.consumer))
-			consumer.subscribe(topics)
-			self._consumer = consumer
-			
+	def _prepare_consumer(self, ensure_topics=[]):
+		init = False
+		if not self._consumer:
+			self._consumer = confluent_kafka.Consumer(dict(self.config.consumer))
 			if not self.config.consumer.get("enable.auto.commit", True):
 				self._consumer_mutex = threading.Lock()
+			init = True
 		
+		ret = None
+		if ensure_topics or init:
+			current = {a.topic for a in self._consumer.assignment()}
+			topics = self._handlers.keys()
+			if ensure_topics:
+				ret = threading.Event()
+				if not (set(ensure_topics) - current):
+					ret.set()
+			if current != set(topics):
+				if ret and not ret.is_set():
+					def on_assign(consumer, partitions):
+						got = {p.topic for p in consumer.assignment() + partitions}
+						if not (set(ensure_topics) - got):
+							ret.set()
+					
+					self._consumer.subscribe(list(topics), on_assign=on_assign)
+				else:
+					self._consumer.subscribe(list(topics))
+		
+		return ret
+	
+	def poll(self):
+		self._prepare_consumer()
 		msg = self._consumer.poll(0.1)
 		if msg is None:
 			return
@@ -138,12 +169,16 @@ class Tap(object):
 			with self._consumer_mutex:
 				self._consumer.commit(msg)
 	
-	def map_reduce(topic, message=None, json=None, topic_filter=[]):
+	def map_reduce(self, topic, message=None, json=None, topic_filter=[]):
 		queue = Queue()
 		entry = (lambda m: queue.put(m), {})
 		try:
 			for topic in topic_filter:
-				tap._handlers[topic].append(entry)
+				self._handlers[topic].append(entry)
+			ev = self._prepare_consumer(ensure_topics=topic_filter)
+			while not ev.is_set():
+				if not self._started:
+					self.poll()
 			
 			if message and isinstance(message, BaseModel):
 				json = message.json
@@ -155,16 +190,21 @@ class Tap(object):
 			if self._producer is None:
 				self._producer = confluent_kafka.Producer(dict(self.config.producer))
 			
-			self._producer.produce(topic, message, )
+			self._producer.produce(topic, message)
 			
 			if self._started:
-				for q in queue:
-					yield q
+				while True:
+					try:
+						yield queue.get(1.0)
+					except Empty:
+						pass
 			else:
 				while True:
-					for q in queue:
-						yield q
-					self.poll()
+					try:
+						while True:
+							yield queue.get_nowait()
+					except Empty:
+						self.poll()
 		finally:
 			for topic in topic_filter:
-				tap._handlers[topic].remove(entry)
+				self._handlers[topic].remove(entry)
