@@ -1,2 +1,3 @@
-from .tap import Tap, raw_message
+from .tap import Tap
+from .g import raw_message
 from .db import SQLAlchemy, session

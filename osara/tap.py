@@ -66,8 +66,8 @@ class Tap(object):
 	_consumer = None
 	_consumer_mutex = None
 	
-	def __init__(self):
-		self.config = {}
+	def __init__(self, config={}):
+		self.config = Config(config)
 		self._schema = {}
 		self._handlers = defaultdict(lambda:[])
 		self._error_handlers = []
@@ -101,7 +101,7 @@ class Tap(object):
 		if self._consumer is None:
 			topics = list(self._handlers.keys())
 			
-			consumer = confluent_kafka.Consumer(self.config.consumer)
+			consumer = confluent_kafka.Consumer(dict(self.config.consumer))
 			consumer.subscribe(topics)
 			self._consumer = consumer
 			
@@ -153,7 +153,7 @@ class Tap(object):
 				message = message.encode("UTF-8")
 			
 			if self._producer is None:
-				self._producer = confluent_kafka.Producer(self.config.producer)
+				self._producer = confluent_kafka.Producer(dict(self.config.producer))
 			
 			self._producer.produce(topic, message, )
 			
