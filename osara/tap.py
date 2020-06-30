@@ -48,9 +48,10 @@ class Config(dict):
 		self.consumer = ChainMap(consumer, self)
 
 
-def run_in_thread(poll_func, daemon=True):
+def run_in_thread(init_func, poll_func, daemon=True):
 	stop_flag = threading.Event()
 	def runner():
+		init_func()
 		while not stop_flag.is_set():
 			poll_func()
 	
@@ -78,6 +79,7 @@ class Tap(object):
 	
 	def __init__(self, config={}):
 		self.config = Config(config)
+		self._lock = threading.Lock()
 		self._schema = {}
 		self._handlers = defaultdict(lambda:[])
 		self._assigned = []
@@ -106,39 +108,40 @@ class Tap(object):
 	
 	def start(self, daemon=True):
 		self._started = True
-		return run_in_thread(self.poll, daemon=daemon)
+		return run_in_thread(self.poll_prepare, self.poll, daemon=daemon)
 	
-	def _prepare_consumer(self, ensure_topics=[]):
-		init = False
-		if not self._consumer:
-			self._consumer = confluent_kafka.Consumer(dict(self.config.consumer))
-			if not self.config.consumer.get("enable.auto.commit", True):
-				self._consumer_mutex = threading.Lock()
-			init = True
-		
-		ret = None
-		if ensure_topics or init:
-			current = {a.topic for a in self._consumer.assignment()}
-			topics = self._handlers.keys()
-			if ensure_topics:
-				ret = threading.Event()
-				if not (set(ensure_topics) - current):
-					ret.set()
-			if current != set(topics):
-				if ret and not ret.is_set():
-					def on_assign(consumer, partitions):
-						got = {p.topic for p in consumer.assignment() + partitions}
-						if not (set(ensure_topics) - got):
-							ret.set()
-					
-					self._consumer.subscribe(list(topics), on_assign=on_assign)
-				else:
-					self._consumer.subscribe(list(topics))
-		
-		return ret
+	def poll_prepare(self, ensure_topics=[]):
+		with self._lock:
+			init = False
+			if not self._consumer:
+				self._consumer = confluent_kafka.Consumer(dict(self.config.consumer))
+				if not self.config.consumer.get("enable.auto.commit", True):
+					self._consumer_mutex = threading.Lock()
+				init = True
+			
+			ret = None
+			if ensure_topics or init:
+				current = {a.topic for a in self._consumer.assignment()}
+				topics = self._handlers.keys()
+				if ensure_topics:
+					ret = threading.Event()
+					assert not (set(ensure_topics) - topics), "ensure_topics must be subset of topics"
+					if not (set(ensure_topics) - current):
+						ret.set()
+				if current != set(topics):
+					if ret and not ret.is_set():
+						def on_assign(consumer, partitions):
+							got = {p.topic for p in consumer.assignment() + partitions}
+							if not (set(ensure_topics) - got):
+								ret.set()
+						
+						self._consumer.subscribe(list(topics), on_assign=on_assign)
+					else:
+						self._consumer.subscribe(list(topics))
+			
+			return ret
 	
 	def poll(self):
-		self._prepare_consumer()
 		msg = self._consumer.poll(0.1)
 		if msg is None:
 			return
@@ -175,9 +178,11 @@ class Tap(object):
 		try:
 			for topic in topic_filter:
 				self._handlers[topic].append(entry)
-			ev = self._prepare_consumer(ensure_topics=topic_filter)
+			ev = self.poll_prepare(ensure_topics=topic_filter)
 			while not ev.is_set():
-				if not self._started:
+				if self._started:
+					ev.wait()
+				else:
 					self.poll()
 			
 			if message and isinstance(message, BaseModel):

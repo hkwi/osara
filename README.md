@@ -41,6 +41,8 @@ if __name__=="__main__":
 
 ## produce, then consume
 
+Sometime, we want RPC style message flow.
+
 ```
 from osara import Tap
 tap = Tap({"bootstrap.servers":"127.0.0.1", "group.id":"demo"})
