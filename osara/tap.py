@@ -87,6 +87,7 @@ class Tap(object):
 	def schema(self, topic_name):
 		def wrapper(cls):
 			self._schema[topic_name] = cls
+			return cls
 		return wrapper
 	
 	def handler(self, topic_name, **opts):
@@ -95,11 +96,13 @@ class Tap(object):
 			self._handlers[topic_name].append((func, opts))
 			if new_topic and self._consumer:
 				self._consumer.subscribe(list(self._handlers.keys()))
+			return func
 		return wrapper
 	
 	def error_handler(self):
 		def wrapper(func):
 			self._error_handlers.append(func)
+			return func
 		return wrapper
 	
 	def context(self):
@@ -175,8 +178,8 @@ class Tap(object):
 		queue = Queue()
 		entry = (lambda m: queue.put(m), {})
 		
-		for topic in topic_filter:
-			self._handlers[topic].append(entry)
+		for t in topic_filter:
+			self._handlers[t].append(entry)
 		
 		ev = self.poll_prepare(ensure_topics=topic_filter)
 		while not ev.is_set():
@@ -186,7 +189,7 @@ class Tap(object):
 				self.poll()
 		
 		if message and isinstance(message, BaseModel):
-			json = message.json
+			json = message.dict()
 		if json:
 			message = json_dumps(json)
 		if isinstance(message, str):
@@ -227,6 +230,6 @@ class Tap(object):
 							self.poll()
 			
 			def __del__(iter_self):
-				for topic in topic_filter:
-					self._handlers[topic].remove(entry)
+				for t in topic_filter:
+					self._handlers[t].remove(entry)
 		return Iter()
