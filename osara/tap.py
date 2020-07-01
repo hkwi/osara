@@ -75,7 +75,6 @@ class Tap(object):
 	_started = False
 	_consumer = None
 	_consumer_mutex = None
-	_producer = None
 	
 	def __init__(self, config={}):
 		self.config = Config(config)
@@ -110,7 +109,7 @@ class Tap(object):
 		self._started = True
 		return run_in_thread(self.poll_prepare, self.poll, daemon=daemon)
 	
-	def poll_prepare(self, ensure_topics=[]):
+	def poll_prepare(self, ensure_topics=None):
 		with self._lock:
 			init = False
 			if not self._consumer:
@@ -120,10 +119,10 @@ class Tap(object):
 				init = True
 			
 			ret = None
-			if ensure_topics or init:
+			if ensure_topics is not None or init:
 				current = {a.topic for a in self._consumer.assignment()}
 				topics = self._handlers.keys()
-				if ensure_topics:
+				if ensure_topics is not None:
 					ret = threading.Event()
 					assert not (set(ensure_topics) - topics), "ensure_topics must be subset of topics"
 					if not (set(ensure_topics) - current):
@@ -132,7 +131,7 @@ class Tap(object):
 					if ret and not ret.is_set():
 						def on_assign(consumer, partitions):
 							got = {p.topic for p in consumer.assignment() + partitions}
-							if not (set(ensure_topics) - got):
+							if ensure_topics is not None and not (set(ensure_topics) - got):
 								ret.set()
 						
 						self._consumer.subscribe(list(topics), on_assign=on_assign)
@@ -175,41 +174,59 @@ class Tap(object):
 	def map_reduce(self, topic, message=None, json=None, topic_filter=[]):
 		queue = Queue()
 		entry = (lambda m: queue.put(m), {})
-		try:
-			for topic in topic_filter:
-				self._handlers[topic].append(entry)
-			ev = self.poll_prepare(ensure_topics=topic_filter)
-			while not ev.is_set():
-				if self._started:
-					ev.wait()
-				else:
-					self.poll()
-			
-			if message and isinstance(message, BaseModel):
-				json = message.json
-			if json:
-				message = json_dumps(json)
-			if isinstance(message, str):
-				message = message.encode("UTF-8")
-			
-			if self._producer is None:
-				self._producer = confluent_kafka.Producer(dict(self.config.producer))
-			
-			self._producer.produce(topic, message)
-			
+		
+		for topic in topic_filter:
+			self._handlers[topic].append(entry)
+		
+		ev = self.poll_prepare(ensure_topics=topic_filter)
+		while not ev.is_set():
 			if self._started:
-				while True:
-					try:
-						yield queue.get(1.0)
-					except Empty:
-						pass
+				ev.wait()
 			else:
-				while True:
-					try:
-						while True:
-							yield queue.get_nowait()
-					except Empty:
-						self.poll()
-		finally:
-			for topic in topic_filter:
-				self._handlers[topic].remove(entry)
+				self.poll()
+		
+		if message and isinstance(message, BaseModel):
+			json = message.json
+		if json:
+			message = json_dumps(json)
+		if isinstance(message, str):
+			message = message.encode("UTF-8")
+		
+		pcond = Queue()
+		producer = confluent_kafka.Producer(dict(self.config.producer))
+		producer.produce(topic, message, on_delivery=lambda e,m:pcond.put((e,m)))
+		while True:
+			try:
+				e,m = pcond.get_nowait()
+				if e:
+					raise e
+				break
+			except Empty:
+				producer.poll(0.1)
+		
+		class Iter:
+			def __iter__(iter_self):
+				return iter_self
+			
+			def __next__(iter_self):
+				if not topic_filter:
+					raise StopIteration("Use topic_filter to capture response")
+				
+				if self._started:
+					while True:
+						try:
+							return queue.get(1.0)
+						except Empty:
+							pass
+				else:
+					while True:
+						try:
+							while True:
+								return queue.get_nowait()
+						except Empty:
+							self.poll()
+			
+			def __del__(iter_self):
+				for topic in topic_filter:
+					self._handlers[topic].remove(entry)
+		return Iter()

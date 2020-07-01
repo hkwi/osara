@@ -1,7 +1,7 @@
 # micro-framewaork on top of kappa architecture
 On the top of kappa --- is a disk, called "kappa no sara" in Japanese Yokai.
 
-Syntax was inspired from flask.
+Syntax was inspired from [faust](https://pypi.org/project/faust/) and [flask](https://pypi.org/project/Flask/).
 
 ```
 from osara import Tap
