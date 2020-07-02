@@ -19,12 +19,12 @@ class Pong(BaseModel):
 
 @tap.handler("demo_ping")
 def handle_demo(msg):
-	tap.map_reduce("demo_pong", Pong(pong=msg.model.ping))
+	tap.map_reduce("demo_pong", Pong(pong=msg.model().ping))
 
 @app.route("/", methods=["GET"])
 def index():
 	for msg in tap.map_reduce("demo_ping", Ping(ping=datetime.datetime.now().isoformat()), topic_filter=["demo_pong"]):
-		return msg.model.pong
+		return msg.model().pong
 
 if __name__=="__main__":
 	tap.start()
