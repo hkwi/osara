@@ -10,9 +10,11 @@ def _fetch_session():
 	
 	if not hasattr(top, "session"):
 		app = top.app
-		top.session = orm.scoped_session(
+		top.session = session = orm.scoped_session(
 			orm.sessionmaker(bind=app._sqlalchemy.engine),
 			scopefunc=_message_ctx_stack.__ident_func__)
+		
+		top.cleanup.append(session.remove)
 	
 	return top.session
 
@@ -28,6 +30,7 @@ class SQLAlchemy(object):
 		#
 		app._sqlalchemy = self
 		app._sqlalchemy_config = self.config = {}
+		self.session = session
 	
 	@property
 	def engine(self):

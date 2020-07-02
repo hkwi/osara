@@ -32,8 +32,8 @@ class X(BaseModel):
 
 @tap.handler("topic_x")
 def handle_x(msg):
-	# you can access parsed data via "model" attribute
-	print("Got %s" % msg.model.msg)
+	# you can access parsed data via "model" method
+	print("Got %s" % msg.model().msg)
 
 if __name__=="__main__":
 	tap.start().wait()

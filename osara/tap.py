@@ -21,14 +21,24 @@ class Message:
 	value: bytes
 	schema: BaseModel
 	
-	@property
+	#
+	# Styles to access converted format
+	#
+	# - requests.Response#json
+	# - flask.Request#get_json
+	# - pydantic.BaseModel#dict
+	# - pydantic.BaseModel#json
+	#
+	# `request.json` deprecation discussion
+	# https://github.com/pallets/flask/issues/1421
+	#
+	
 	def model(self):
 		if self.schema:
 			return self.schema.parse_raw(self.value)
 		else:
 			raise ValueError("No model schema attached")
 	
-	@property
 	def json(self):
 		return json_loads(self.value)
 
