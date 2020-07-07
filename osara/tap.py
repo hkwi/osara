@@ -185,19 +185,34 @@ class Tap(object):
 				self._consumer.commit(msg)
 	
 	def map_reduce(self, topic, message=None, json=None, topic_filter=[]):
-		queue = Queue()
-		entry = (lambda m: queue.put(m), {})
+		return MapReduce(
+			tap=self, topic_filter=topic_filter
+		).map(
+			topic, message=message, json=json
+		).reduce()
+
+
+class MapReduce:
+	_capture = None
+	_cb_entry = None
+	
+	def __init__(self, tap, topic_filter=[]):
+		self.tap = tap
+		self.topic_filter = topic_filter
 		
+		self._reduce = q = Queue()
+		self._cb_entry = (lambda m: q.put(m), {})
 		for t in topic_filter:
-			self._handlers[t].append(entry)
+			self.tap._handlers[t].append(self._cb_entry)
 		
-		ev = self.poll_prepare(ensure_topics=topic_filter)
+		ev = self.tap.poll_prepare(ensure_topics=topic_filter)
 		while not ev.is_set():
-			if self._started:
+			if self.tap._started:
 				ev.wait()
 			else:
-				self.poll()
-		
+				self.tap.poll()
+	
+	def map(self, topic, message=None, json=None):
 		if message and isinstance(message, BaseModel):
 			json = message.dict()
 		if json:
@@ -206,7 +221,7 @@ class Tap(object):
 			message = message.encode("UTF-8")
 		
 		pcond = Queue()
-		producer = confluent_kafka.Producer(dict(self.config.producer))
+		producer = confluent_kafka.Producer(dict(self.tap.config.producer))
 		producer.produce(topic, message, on_delivery=lambda e,m:pcond.put((e,m)))
 		while True:
 			try:
@@ -216,30 +231,24 @@ class Tap(object):
 				break
 			except Empty:
 				producer.poll(0.1)
-		
-		class Iter:
-			def __iter__(iter_self):
-				return iter_self
-			
-			def __next__(iter_self):
-				if not topic_filter:
-					raise StopIteration("Use topic_filter to capture response")
-				
-				if self._started:
-					while True:
-						try:
-							return queue.get(1.0)
-						except Empty:
-							pass
-				else:
-					while True:
-						try:
-							while True:
-								return queue.get_nowait()
-						except Empty:
-							self.poll()
-			
-			def __del__(iter_self):
-				for t in topic_filter:
-					self._handlers[t].remove(entry)
-		return Iter()
+		return self
+	
+	def reduce(self):
+		if self.topic_filter:
+			if self.tap._started:
+				while True:
+					try:
+						yield self._reduce.get(1.0)
+					except Empty:
+						pass
+			else:
+				while True:
+					try:
+						while True:
+							yield self._reduce.get_nowait()
+					except Empty:
+						self.tap.poll()
+	
+	def __del__(self):
+		for t in self.topic_filter:
+			self.tap._handlers[t].remove(self._cb_entry)
