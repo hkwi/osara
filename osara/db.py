@@ -35,7 +35,7 @@ class SQLAlchemy(object):
 	@property
 	def engine(self):
 		if not self._engine:
-			self._engine = create_engine(app._sqlalchemy_config["SQLALCHEMY_DATABASE_URI"])
+			self._engine = create_engine(self.config["SQLALCHEMY_DATABASE_URI"])
 		return self._engine
 	
 	@engine.setter

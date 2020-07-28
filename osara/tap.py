@@ -85,6 +85,7 @@ class Tap(object):
 	_started = False
 	_consumer = None
 	_consumer_mutex = None
+	_producer = None
 	
 	def __init__(self, config={}):
 		self.config = Config(config)
@@ -128,6 +129,7 @@ class Tap(object):
 			if not self._consumer:
 				self._consumer = confluent_kafka.Consumer(dict(self.config.consumer))
 				if not self.config.consumer.get("enable.auto.commit", True):
+					# producer shall barrier consumer commit in transactional api
 					self._consumer_mutex = threading.Lock()
 				init = True
 			
@@ -206,11 +208,12 @@ class MapReduce:
 			self.tap._handlers[t].append(self._cb_entry)
 		
 		ev = self.tap.poll_prepare(ensure_topics=topic_filter)
-		while not ev.is_set():
-			if self.tap._started:
-				ev.wait()
-			else:
-				self.tap.poll()
+		if ev:
+			while not ev.is_set():
+				if self.tap._started:
+					ev.wait()
+				else:
+					self.tap.poll()
 	
 	def map(self, topic, message=None, json=None):
 		if message and isinstance(message, BaseModel):
@@ -221,8 +224,9 @@ class MapReduce:
 			message = message.encode("UTF-8")
 		
 		pcond = Queue()
-		producer = confluent_kafka.Producer(dict(self.tap.config.producer))
-		producer.produce(topic, message, on_delivery=lambda e,m:pcond.put((e,m)))
+		if self.tap._producer is None:
+			self.tap._producer = confluent_kafka.Producer(dict(self.tap.config.producer))
+		self.tap._producer.produce(topic, message, on_delivery=lambda e,m:pcond.put((e,m)))
 		while True:
 			try:
 				e,m = pcond.get_nowait()
@@ -230,7 +234,7 @@ class MapReduce:
 					raise e
 				break
 			except Empty:
-				producer.poll(0.1)
+				self.tap._producer.poll(0.1)
 		return self
 	
 	def reduce(self):
