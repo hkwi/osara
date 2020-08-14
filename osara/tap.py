@@ -1,6 +1,8 @@
 import logging
 import threading
+import functools
 import confluent_kafka
+from datetime import datetime
 from json import loads as json_loads
 from json import dumps as json_dumps
 from queue import Queue, Empty
@@ -8,6 +10,24 @@ from pydantic import BaseModel
 from dataclasses import dataclass
 from collections import defaultdict, ChainMap
 from .g import _message_ctx_stack, Context
+
+logger = logging.getLogger(__name__)
+
+def format_partitions(ps):
+	topics = {}
+	errors = []
+	for p in ps:
+		if p.error:
+			errors.append(p)
+		elif p.topic in topics:
+			topics[p.topic].append(p.partition)
+		else:
+			topics[p.topic] = [p.partition]
+	
+	if errors:
+		topic["errors"] = errors
+	
+	return topics
 
 #
 # from confluent_kafka view, splitting Message to
@@ -58,18 +78,20 @@ class Config(dict):
 		self.consumer = ChainMap(consumer, self)
 
 
-def run_in_thread(init_func, poll_func, daemon=True):
+def run_in_thread(poll_func, daemon=True):
 	stop_flag = threading.Event()
 	def runner():
-		init_func()
 		while not stop_flag.is_set():
 			poll_func()
 	
 	th = threading.Thread(target=runner)
 	th.daemon = daemon
 	th.start()
+	
 	return stop_flag
 
+class NotReady(Exception):
+	pass
 
 #
 # Plans to make kafka runtime pluggable
@@ -94,6 +116,7 @@ class Tap(object):
 		self._handlers = defaultdict(lambda:[])
 		self._assigned = []
 		self._error_handlers = []
+		self.on_assign_cb_list = []
 	
 	def schema(self, topic_name):
 		def wrapper(cls):
@@ -105,8 +128,6 @@ class Tap(object):
 		def wrapper(func):
 			new_topic = not self._handlers[topic_name]
 			self._handlers[topic_name].append((func, opts))
-			if new_topic and self._consumer:
-				self._consumer.subscribe(list(self._handlers.keys()))
 			return func
 		return wrapper
 	
@@ -119,11 +140,53 @@ class Tap(object):
 	def context(self):
 		return Context(self)
 	
-	def start(self, daemon=True):
+	def start(self, daemon=True, init_timestamp=None):
 		self._started = True
-		return run_in_thread(self.poll_prepare, self.poll, daemon=daemon)
+		init = self.poll_prepare(timestamp=init_timestamp)
+		
+		ctrl = run_in_thread(self.poll, daemon=daemon)
+		
+		while True:
+			init.wait(1.0)
+			if init.is_set():
+				break
+		
+		return ctrl
 	
-	def poll_prepare(self, ensure_topics=None):
+	def on_assign(self, consumer, partitions):
+		logger.warn("on_assign %s + %s",
+			format_partitions(consumer.assignment()),
+			format_partitions(partitions))
+		ok = []
+		for cb in self.on_assign_cb_list:
+			try:
+				cb(consumer, partitions)
+				ok.append(cb)
+			except NotReady:
+				pass
+			except:
+				logger.error("on_assign failed %s" % cb, exc_info=True)
+		
+		for cb in ok:
+			self.on_assign_cb_list.remove(cb)
+	
+	def on_revoke(self, consumer, partitions):
+		logger.warn("on_revoke %s + %s",
+			format_partitions(consumer.assignment()),
+			format_partitions(partitions))
+		ok = []
+		for cb in self.on_assign_cb_list:
+			try:
+				cb(consumer, partitions)
+				ok.append(cb)
+			except:
+				pass
+		
+		for cb in ok:
+			self.on_assign_cb_list.remove(cb)
+	
+	def poll_prepare(self, ensure_topics=None, timestamp=None):
+		ret = threading.Event()
 		with self._lock:
 			init = False
 			if not self._consumer:
@@ -133,27 +196,52 @@ class Tap(object):
 					self._consumer_mutex = threading.Lock()
 				init = True
 			
-			ret = None
-			if ensure_topics is not None or init:
-				current = {a.topic for a in self._consumer.assignment()}
-				topics = self._handlers.keys()
-				if ensure_topics is not None:
-					ret = threading.Event()
-					assert not (set(ensure_topics) - topics), "ensure_topics must be subset of topics"
-					if not (set(ensure_topics) - current):
-						ret.set()
-				if current != set(topics):
-					if ret and not ret.is_set():
-						def on_assign(consumer, partitions):
-							got = {p.topic for p in consumer.assignment() + partitions}
-							if ensure_topics is not None and not (set(ensure_topics) - got):
-								ret.set()
-						
-						self._consumer.subscribe(list(topics), on_assign=on_assign)
-					else:
-						self._consumer.subscribe(list(topics))
+			seek_topics = set()
+			if timestamp:
+				if isinstance(timestamp, datetime):
+					timestamp = int(timestamp.timestamp()*1000)
+				
+				if ensure_topics:
+					seek_topics = set(ensure_topics)
+				else:
+					seek_topics = set(self._handlers.keys())
 			
-			return ret
+			def on_assign(consumer, partitions):
+				ready = True
+				current = {a.topic for a in self._consumer.assignment()}
+				current.update({p.topic for p in partitions})
+				if ensure_topics and set(ensure_topics) - current:
+					ready = False
+				
+				seeks = []
+				for p in partitions:
+					if p.topic in seek_topics:
+						seeks.append(confluent_kafka.TopicPartition(p.topic, p.partition, timestamp))
+				
+				if seeks:
+					consumer.assign(consumer.offsets_for_times(seeks))
+					seek_topics.difference_update({p.topic for p in seeks})
+				
+				if seek_topics:
+					ready = False
+				
+				if ready:
+					ret.set()
+				else:
+					raise NotReady()
+			
+			topics = set(self._handlers.keys())
+			if ensure_topics:
+				topics.update(ensure_topics)
+			self.on_assign_cb_list.append(on_assign)
+			
+			current = {p.topic for p in self._consumer.assignment()}
+			if topics - current:
+				self._consumer.subscribe(list(topics), on_assign=self.on_assign)
+			else:
+				ret.set()
+		
+		return ret
 	
 	def poll(self):
 		msg = self._consumer.poll(0.1)
