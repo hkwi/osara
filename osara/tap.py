@@ -116,6 +116,7 @@ class Tap(object):
 		self._handlers = defaultdict(lambda:[])
 		self._assigned = []
 		self._error_handlers = []
+		self._before_first_handler_cb_list = []
 		self.on_assign_cb_list = []
 	
 	def schema(self, topic_name):
@@ -136,6 +137,10 @@ class Tap(object):
 			self._error_handlers.append(func)
 			return func
 		return wrapper
+	
+	def before_first_handler(self, fn):
+		self._before_first_handler_cb_list.append(fn)
+		return fn
 	
 	def context(self):
 		return Context(self)
@@ -250,12 +255,22 @@ class Tap(object):
 		
 		with self.context() as ctx:
 			ctx.raw_message = msg
+			
+			try:
+				for fn in self._before_first_handler_cb_list:
+					fn()
+				
+				self._before_first_handler_cb_list.clear()
+			except:
+				logger.error("before_first_handler failed", exc_info=True)
+				return
+			
 			if msg.error():
 				for func in self._error_handlers:
 					try:
 						func()
 					except:
-						logging.error("error_handler failed", exc_info=True)
+						logger.error("error_handler failed", exc_info=True)
 			else:
 				topic = msg.topic()
 				for func,opts in self._handlers[topic]:
@@ -268,7 +283,7 @@ class Tap(object):
 					try:
 						func(m)
 					except:
-						logging.error("handler failed", exc_info=True)
+						logger.error("handler failed", exc_info=True)
 		
 		if self._consumer_mutex:
 			with self._consumer_mutex:
