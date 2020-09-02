@@ -4,14 +4,14 @@ with open("README.md","r") as fh:
 	long_description = fh.read()
 
 setup(name='osara',
-	version='0.0.2',
+	version='0.0.3',
 	description='micro-framewaork on top of kappa architecture',
 	author='Hiroaki Kawai',
 	author_email="hiroaki.kawai@gmail.com",
 	long_description=long_description,
 	long_description_content_type="text/markdown",
 	url='http://github.com/hkwi/osara',
-	packages=find_packages(exclude=("tests",)),
+	packages=["osara"],
 	install_requires=[
 		'confluent_kafka',
 		'sqlalchemy',
