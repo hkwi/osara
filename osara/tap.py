@@ -128,14 +128,24 @@ class Tap(object):
 		self.on_assign_cb_list = []
 	
 	def schema(self, topic_name):
+		'''
+		Decorator for pydantic schema class.
+		Observed message will be validated by the class.
+		'''
 		def wrapper(cls):
 			self._schema[topic_name] = cls
 			return cls
 		return wrapper
 	
 	def handler(self, topic_name, **opts):
+		'''
+		Decorator for message handler function.
+		The function will be invoked with observed message.
+
+		Function signature is:
+		func(msg:Message)
+		'''
 		def wrapper(func):
-			new_topic = not self._handlers[topic_name]
 			self._handlers[topic_name].append((func, opts))
 			return func
 		return wrapper
@@ -201,13 +211,11 @@ class Tap(object):
 	def poll_prepare(self, ensure_topics=None, timestamp=None):
 		ret = threading.Event()
 		with self._lock:
-			init = False
 			if not self._consumer:
 				self._consumer = confluent_kafka.Consumer(dict(self.config.consumer))
 				if not self.config.consumer.get("enable.auto.commit", True):
 					# producer shall barrier consumer commit in transactional api
 					self._consumer_mutex = threading.Lock()
-				init = True
 			
 			seek_topics = set()
 			if timestamp:
