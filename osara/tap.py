@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from dataclasses import dataclass
 from collections import defaultdict, ChainMap
 from .g import _message_ctx_stack, Context
+from .const import split_props
 
 logger = logging.getLogger(__name__)
 
@@ -72,10 +73,17 @@ class TopicPartition:
 		orm_mode = True
 
 class Config(dict):
-	def __init__(self, both={}, producer={}, consumer={}):
-		super().__init__(both)
-		self.producer = ChainMap(producer, self)
-		self.consumer = ChainMap(consumer, self)
+	def __init__(self, both=None, producer=None, consumer=None):
+		if both is None:
+			both = {}
+		C,P,B = split_props(both)
+		if producer:
+			P.upadte(producer)
+		if consumer:
+			C.update(consumer)
+		super().__init__(B)
+		self.producer = ChainMap(P, self)
+		self.consumer = ChainMap(C, self)
 
 
 def run_in_thread(poll_func, daemon=True):
@@ -109,7 +117,7 @@ class Tap(object):
 	_consumer_mutex = None
 	_producer = None
 	
-	def __init__(self, config={}):
+	def __init__(self, config=None):
 		self.config = Config(config)
 		self._lock = threading.Lock()
 		self._schema = {}
