@@ -4,7 +4,7 @@ with open("README.md","r") as fh:
 	long_description = fh.read()
 
 setup(name='osara',
-	version='0.0.4',
+	version='0.0.5',
 	description='micro-framewaork on top of kappa architecture',
 	author='Hiroaki Kawai',
 	author_email="hiroaki.kawai@gmail.com",
