@@ -213,7 +213,7 @@ class Tap(object):
 		if not topics:
 			return
 		admin = confluent_kafka.admin.AdminClient(dict(self.config.producer))
-		x=admin.create_topics([confluent_kafka.admin.NewTopic(t,1) for t in topics])
+		x=admin.create_topics([confluent_kafka.admin.NewTopic(t,1,1) for t in topics])
 		for r in x.values():
 			try:
 				r.result()
