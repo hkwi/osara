@@ -2,6 +2,7 @@ import logging
 import threading
 import functools
 import confluent_kafka
+import confluent_kafka.admin
 from datetime import datetime
 from json import loads as json_loads
 from json import dumps as json_dumps
@@ -163,9 +164,9 @@ class Tap(object):
 	def context(self):
 		return Context(self)
 	
-	def start(self, daemon=True, init_timestamp=None):
+	def start(self, daemon=True, init_timestamp=None, create_topics=False):
 		self._started = True
-		init = self.poll_prepare(timestamp=init_timestamp)
+		init = self.poll_prepare(timestamp=init_timestamp, create_topics=create_topics)
 		
 		ctrl = run_in_thread(self.poll, daemon=daemon)
 		
@@ -208,7 +209,26 @@ class Tap(object):
 		for cb in ok:
 			self.on_assign_cb_list.remove(cb)
 	
-	def poll_prepare(self, ensure_topics=None, timestamp=None):
+	def create_topics(self, topics=[]):
+		if not topics:
+			return
+		admin = confluent_kafka.admin.AdminClient(dict(self.config.producer))
+		x=admin.create_topics([confluent_kafka.admin.NewTopic(t,1) for t in topics])
+		for r in x.values():
+			try:
+				r.result()
+			except confluent_kafka.KafkaException as e:
+				if e.args[0].code() == confluent_kafka.KafkaError.TOPIC_ALREADY_EXISTS:
+					pass
+				else:
+					raise
+		
+
+	def poll_prepare(self, ensure_topics=None, timestamp=None, create_topics=False):
+		'''
+		ensure_topics : consumer silently does not start handling before all topics are assinged.
+		create_topics : explicitly create topics for consumer with single partition before subscription.
+		'''
 		ret = threading.Event()
 		with self._lock:
 			if not self._consumer:
@@ -258,6 +278,9 @@ class Tap(object):
 			
 			current = {p.topic for p in self._consumer.assignment()}
 			if topics - current:
+				if create_topics:
+					on_server = self._consumer.list_topics().topics.keys()
+					self.create_topics(topics - current - set(on_server))
 				self._consumer.subscribe(list(topics), on_assign=self.on_assign)
 			else:
 				ret.set()
@@ -305,9 +328,9 @@ class Tap(object):
 			with self._consumer_mutex:
 				self._consumer.commit(msg)
 	
-	def map_reduce(self, topic, message=None, json=None, topic_filter=[]):
+	def map_reduce(self, topic, message=None, json=None, topic_filter=[], create_topics=True):
 		return MapReduce(
-			tap=self, topic_filter=topic_filter
+			tap=self, topic_filter=topic_filter, create_topics=create_topics
 		).map(
 			topic, message=message, json=json
 		).reduce()
@@ -317,7 +340,7 @@ class MapReduce:
 	_capture = None
 	_cb_entry = None
 	
-	def __init__(self, tap, topic_filter=[]):
+	def __init__(self, tap, topic_filter=[], create_topics=False):
 		self.tap = tap
 		self.topic_filter = topic_filter
 		
@@ -326,7 +349,10 @@ class MapReduce:
 		for t in topic_filter:
 			self.tap._handlers[t].append(self._cb_entry)
 		
-		ev = self.tap.poll_prepare(ensure_topics=topic_filter)
+		# Producer will do create the topics, we want to subscribe to that
+		# topic before produce(). Enable create_topics if you do not create
+		# topic manually.
+		ev = self.tap.poll_prepare(ensure_topics=topic_filter, create_topics=create_topics)
 		if ev:
 			while not ev.is_set():
 				if self.tap._started:

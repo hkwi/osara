@@ -7,7 +7,11 @@ from osara import Tap
 # `kafkacat -b 127.0.0.1 -G demo_monitor demo_ping demo_pong`
 
 app = Flask(__name__)
-tap = Tap({"bootstrap.servers":"127.0.0.1","group.id":"demo","allow.auto.create.topics":True})
+tap = Tap({
+	"bootstrap.servers":"127.0.0.1",
+	"group.id":"demo",
+	"allow.auto.create.topics":True,
+	"auto.offset.reset":"earliest"})
 
 @tap.schema("demo_ping")
 class Ping(BaseModel):
@@ -27,5 +31,7 @@ def index():
 		return msg.model().pong
 
 if __name__=="__main__":
-	tap.start(init_timestamp=datetime.datetime.now()-datetime.timedelta(minutes=10))
+	tap.start(
+		init_timestamp=datetime.datetime.now()-datetime.timedelta(minutes=10),
+		create_topics=True)
 	app.run()
