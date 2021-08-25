@@ -79,7 +79,7 @@ class Config(dict):
 			both = {}
 		C,P,B = split_props(both)
 		if producer:
-			P.upadte(producer)
+			P.update(producer)
 		if consumer:
 			C.update(consumer)
 		super().__init__(B)
