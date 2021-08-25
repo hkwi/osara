@@ -85,6 +85,12 @@ class Config(dict):
 		super().__init__(B)
 		self.producer = ChainMap(P, self)
 		self.consumer = ChainMap(C, self)
+	
+	def update(self, *args, **kwargs):
+		C,P,B = split_props(dict(*args, **kwargs))
+		super().update(B)
+		self.producer.update(P)
+		self.consumer.update(C)
 
 
 def run_in_thread(poll_func, daemon=True):
