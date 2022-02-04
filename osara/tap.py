@@ -1,17 +1,19 @@
 import logging
 import threading
-import functools
+import inspect
 import confluent_kafka
 import confluent_kafka.admin
 from datetime import datetime
-from json import loads as json_loads
-from json import dumps as json_dumps
+from json import (
+	loads as json_loads,
+	dumps as json_dumps
+)
 from queue import Queue, Empty
 from pydantic import BaseModel
 from dataclasses import dataclass
 from collections import defaultdict, ChainMap
-from .g import _message_ctx_stack, Context
 from .const import split_props
+from .g import MessageContext
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +29,7 @@ def format_partitions(ps):
 			topics[p.topic] = [p.partition]
 	
 	if errors:
-		topic["errors"] = errors
+		topics["errors"] = errors
 	
 	return topics
 
@@ -167,9 +169,6 @@ class Tap(object):
 		self._before_first_handler_cb_list.append(fn)
 		return fn
 	
-	def context(self):
-		return Context(self)
-	
 	def start(self, daemon=True, init_timestamp=None, create_topics=False):
 		self._started = True
 		init = self.poll_prepare(timestamp=init_timestamp, create_topics=create_topics)
@@ -298,9 +297,8 @@ class Tap(object):
 		if msg is None:
 			return
 		
-		with self.context() as ctx:
-			ctx.raw_message = msg
-			
+		with MessageContext() as msg_ctx:
+			msg_ctx.raw_message = msg # set raw_message LocalProxy
 			try:
 				for fn in self._before_first_handler_cb_list:
 					fn()
@@ -320,13 +318,17 @@ class Tap(object):
 				topic = msg.topic()
 				for func,opts in self._handlers[topic]:
 					schema = opts.get("schema", self._schema.get(topic))
-					m = Message(
+					# set message LocalProxy
+					m = msg_ctx.message = Message(
 						key=msg.key(),
 						value=msg.value(),
 						schema=schema
 					)
 					try:
-						func(m)
+						if inspect.signature(func).parameters:
+							func(m) # compat
+						else:
+							func()
 					except:
 						logger.error("handler failed", exc_info=True)
 		

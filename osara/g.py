@@ -10,17 +10,12 @@ def _fetch_from_message_ctx(name: str):
 	return getattr(top, name)
 
 raw_message = LocalProxy(partial(_fetch_from_message_ctx, "raw_message"))
+message = LocalProxy(partial(_fetch_from_message_ctx, "message"))
 
-class Context(object):
-	def __init__(self, app):
-		self.app = app
-		self.cleanup = []
-	
+class MessageContext(object):
 	def __enter__(self):
 		_message_ctx_stack.push(self)
 		return self
 	
 	def __exit__(self, exc_type, exc_value, tb):
-		for func in self.cleanup:
-			func()
 		_message_ctx_stack.pop()
